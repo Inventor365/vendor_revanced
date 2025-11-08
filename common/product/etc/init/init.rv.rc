@@ -1,0 +1,15 @@
+on property:sys.boot_completed=1 && property:persist.sys.revan.mod=true
+    # Unmount previous mount if any
+    umount /product/app/YouTube/YouTube.apk
+
+    # Bind mount patched YouTube directly from product
+    mount none /product/etc/rv/YouTube_patched.apk /product/app/YouTube/YouTube.apk bind
+
+    # Unmount previous mount if any
+    umount /product/app/Music/Music.apk
+
+    # Bind mount patched Music directly from product
+    mount none /product/etc/rv/Music_patched.apk /product/app/Music/Music.apk bind
+
+    # Lock it read-only
+    # mount none /product/app/YouTube/YouTube.apk /product/app/YouTube/YouTube.apk remount,bind,ro

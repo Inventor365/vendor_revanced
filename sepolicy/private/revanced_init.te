@@ -1,0 +1,9 @@
+# allow init to bind-mount over YouTube
+allow init system_file:file mounton;
+
+# allow init to read patched APK from /product/etc/rv
+allow init system_file:dir { search getattr };
+allow init system_file:file { read open getattr };
+
+# allow mount syscall
+allow init rootfs:filesystem mount;
