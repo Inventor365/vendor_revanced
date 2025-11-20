@@ -5,7 +5,7 @@ PRODUCT_PACKAGES += \
     YouTube \
     YouTube_patched \
     YouTube_libdir \
-    Music \
-    Music_patched \
-    Music_libdir
+    YTMusic \
+    YTMusic_patched \
+    YTMusic_libdir
 
