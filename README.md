@@ -5,7 +5,7 @@ This repo contains helper files to integrate ReVanced prebuilts.
 
 1. Clone this repo under vendor/revanced
    ```sh
-   git clone https://github.com/PixelLineage/vendor_revanced vendor/revanced
+   git clone https://github.com/Inventor365/vendor_revanced vendor/revanced
    ```
 2. Inherit in your vendor or device tree  
    ```mk
