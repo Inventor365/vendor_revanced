@@ -1,2 +1,3 @@
 # Ignore all 'lib' folders inside common/product/app/*
-common/product/app/*/lib/
+common/product/app/*/lib/*
+!common/product/app/*/lib/placeholder.txt
