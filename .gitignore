@@ -1,4 +1,6 @@
 # Track prebuilt native libraries in common/product/app/*
 .opencode/
+*.log
+
 
 
