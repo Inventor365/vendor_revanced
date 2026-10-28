@@ -1,6 +1,6 @@
 # Track prebuilt native libraries in common/product/app/*
 .opencode/
 *.log
-
-
-
+common/prepared.mk
+common/.revanced_status.json
+common/product/app/*/.lib_extract_tmp/

@@ -1,0 +1,264 @@
+From 5a97e2194499df3271770146168f75d81869241b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Quick=20=E2=9A=A1?= <quick@disroot.org>
+Date: Mon, 25 May 2026 10:12:14 +0530
+Subject: [PATCH] base: Harden Revanced update blocking
+
+* Hide revanced packages from Play Store direct and list queries
+* Abort Play Store update sessions after parsed package name is known
+* Use neutral managed-store naming to avoid logs detection
+
+Change-Id: I68db164cb4bd2fef815964612782caa3bd04f781
+---
+ .../app/ApplicationPackageManager.java        | 59 ++++++++---------
+ .../server/pm/PackageInstallerService.java    | 65 ++++++++-----------
+ .../server/pm/PackageInstallerSession.java    | 13 ++++
+ 3 files changed, 70 insertions(+), 67 deletions(-)
+
+diff --git a/core/java/android/app/ApplicationPackageManager.java b/core/java/android/app/ApplicationPackageManager.java
+index ef12372635f4..66ef430d39c7 100644
+--- a/core/java/android/app/ApplicationPackageManager.java
++++ b/core/java/android/app/ApplicationPackageManager.java
+@@ -180,6 +180,10 @@ import java.util.function.Function;
+ public class ApplicationPackageManager extends PackageManager {
+     private static final String TAG = "ApplicationPackageManager";
+     private static final boolean DEBUG_ICONS = false;
++    private static final String PACKAGE_PLAY_STORE = "com.android.vending";
++    private static final String PACKAGE_YOUTUBE = "com.google.android.youtube";
++    private static final String PACKAGE_YOUTUBE_MUSIC = "com.google.android.apps.youtube.music";
++    private static final String PROPERTY_MANAGED_STORE_UPDATES = "persist.sys.revan.mod";
+ 
+     private static final int DEFAULT_EPHEMERAL_COOKIE_MAX_SIZE_BYTES = 16384; // 16KB
+ 
+@@ -286,6 +290,9 @@ public class ApplicationPackageManager extends PackageManager {
+     @Override
+     public PackageInfo getPackageInfoAsUser(String packageName, PackageInfoFlags flags, int userId)
+             throws NameNotFoundException {
++        if (shouldHideManagedPackage(packageName)) {
++            throw new NameNotFoundException(packageName);
++        }
+         PackageInfo pi =
+                 getPackageInfoAsUserCached(
+                         packageName,
+@@ -548,6 +555,9 @@ public class ApplicationPackageManager extends PackageManager {
+     @Override
+     public ApplicationInfo getApplicationInfoAsUser(String packageName, ApplicationInfoFlags flags,
+             int userId) throws NameNotFoundException {
++        if (shouldHideManagedPackage(packageName)) {
++            throw new NameNotFoundException(packageName);
++        }
+         ApplicationInfo ai = getApplicationInfoAsUserCached(
+                         packageName,
+                         updateFlagsForApplication(flags.getValue(), userId),
+@@ -1375,6 +1385,19 @@ public class ApplicationPackageManager extends PackageManager {
+         sGetPackagesForUidCache.invalidateCache();
+     }
+ 
++    private boolean shouldHideManagedPackage(@Nullable String packageName) {
++        return shouldHideManagedPackages() && isManagedPackage(packageName);
++    }
++
++    private boolean shouldHideManagedPackages() {
++        return SystemProperties.getBoolean(PROPERTY_MANAGED_STORE_UPDATES, true)
++                && PACKAGE_PLAY_STORE.equals(mContext.getOpPackageName());
++    }
++
++    private static boolean isManagedPackage(@Nullable String packageName) {
++        return PACKAGE_YOUTUBE.equals(packageName) || PACKAGE_YOUTUBE_MUSIC.equals(packageName);
++    }
++
+     @Override
+     public String getNameForUid(int uid) {
+         try {
+@@ -1462,35 +1485,9 @@ public class ApplicationPackageManager extends PackageManager {
+             }
+ 
+             List<PackageInfo> res = parceledList.getList();
+-
+-            // --- BEGIN HIDE PATCH (skip only if persist.sys.revan.mod=false) ---
+-            try {
+-                String revProp = android.os.SystemProperties.get("persist.sys.revan.mod", "");
+-                // Skip hiding only when explicitly disabled
+-                if (!"false".equalsIgnoreCase(revProp)) {
+-                    String caller = mContext.getOpPackageName();
+-                    if ("com.android.vending".equals(caller)) {
+-                        Iterator<PackageInfo> it = res.iterator();
+-                        while (it.hasNext()) {
+-                            PackageInfo pi = it.next();
+-                            String pkg = pi.packageName;
+-                            if ("com.google.android.youtube".equals(pkg)
+-                                    || "com.google.android.apps.youtube.music".equals(pkg)) {
+-                                it.remove();
+-                            }
+-                        }
+-                        android.util.Log.i("ReVanHide",
+-                            "Filtered YouTube + YouTube Music for Play Store");
+-                    }
+-                } else {
+-                    android.util.Log.i("ReVanHide",
+-                        "persist.sys.revan.mod=false → skipping hide logic");
+-                }
+-            } catch (Exception e) {
+-                android.util.Log.w("ReVanHide", "Hide patch failed", e);
++            if (shouldHideManagedPackages()) {
++                res.removeIf(pi -> pi != null && isManagedPackage(pi.packageName));
+             }
+-            // --- END HIDE PATCH ---
+-
+             return res;
+         } catch (RemoteException e) {
+             throw e.rethrowFromSystemServer();
+@@ -1592,7 +1589,11 @@ public class ApplicationPackageManager extends PackageManager {
+             if (parceledList == null) {
+                 return Collections.emptyList();
+             }
+-            return parceledList.getList();
++            List<ApplicationInfo> res = parceledList.getList();
++            if (shouldHideManagedPackages()) {
++                res.removeIf(ai -> ai != null && isManagedPackage(ai.packageName));
++            }
++            return res;
+         } catch (RemoteException e) {
+             throw e.rethrowFromSystemServer();
+         }
+diff --git a/services/core/java/com/android/server/pm/PackageInstallerService.java b/services/core/java/com/android/server/pm/PackageInstallerService.java
+index 3d99f45c0f3f..40c5bf491ab1 100644
+--- a/services/core/java/com/android/server/pm/PackageInstallerService.java
++++ b/services/core/java/com/android/server/pm/PackageInstallerService.java
+@@ -173,6 +173,10 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
+         PackageSessionProvider {
+     private static final String TAG = "PackageInstaller";
+     private static final boolean LOGD = Log.isLoggable(TAG, Log.DEBUG);
++    private static final String PACKAGE_PLAY_STORE = "com.android.vending";
++    private static final String PACKAGE_YOUTUBE = "com.google.android.youtube";
++    private static final String PACKAGE_YOUTUBE_MUSIC = "com.google.android.apps.youtube.music";
++    private static final String PROPERTY_MANAGED_STORE_UPDATES = "persist.sys.revan.mod";
+ 
+     private static final boolean DEBUG = Build.IS_DEBUGGABLE;
+ 
+@@ -797,19 +801,9 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
+             params.appPackageName = null;
+         }
+ 
+-        // revanced blocker
+-        String trgtPkg = params.appPackageName;
+-
+-        // Only enforce if the prop is set to false
+-        boolean blockrv = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
+-
+-        if (blockrv && trgtPkg != null && "com.android.vending".equals(installerPackageName)) {
+-            if ("com.google.android.youtube".equals(trgtPkg)
+-                    || "com.google.android.apps.youtube.music".equals(trgtPkg)) {
+-                throw new SecurityException("Play Store updates blocked for " + trgtPkg);
+-            }
++        if (shouldBlockManagedStoreUpdate(installerPackageName, params.appPackageName)) {
++            throw new SecurityException("Play Store updates blocked for " + params.appPackageName);
+         }
+-        // revanced blocker
+ 
+         params.appLabel = TextUtils.trimToSize(params.appLabel,
+                 PackageItemInfo.MAX_SAFE_LABEL_LENGTH);
+@@ -1462,6 +1456,24 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
+         return "smdl" + sessionId + ".tmp";
+     }
+ 
++    static boolean shouldBlockManagedStoreUpdate(@Nullable String installerPackageName,
++            @Nullable String packageName) {
++        return SystemProperties.getBoolean(PROPERTY_MANAGED_STORE_UPDATES, true)
++                && PACKAGE_PLAY_STORE.equals(installerPackageName)
++                && isManagedPackage(packageName);
++    }
++
++    private boolean shouldBlockManagedStoreUpdate(@Nullable String packageName, int callingUid) {
++        return SystemProperties.getBoolean(PROPERTY_MANAGED_STORE_UPDATES, true)
++                && isManagedPackage(packageName)
++                && ArrayUtils.contains(mPm.snapshotComputer().getPackagesForUid(callingUid),
++                        PACKAGE_PLAY_STORE);
++    }
++
++    private static boolean isManagedPackage(@Nullable String packageName) {
++        return PACKAGE_YOUTUBE.equals(packageName) || PACKAGE_YOUTUBE_MUSIC.equals(packageName);
++    }
++
+     private boolean shouldFilterSession(@NonNull Computer snapshot, int uid, SessionInfo info) {
+         if (info == null) {
+             return false;
+@@ -1746,32 +1758,9 @@ public class PackageInstallerService extends IPackageInstaller.Stub implements
+     public void installExistingPackage(String packageName, int installFlags, int installReason,
+             IntentSender statusReceiver, int userId, List<String> allowListedPermissions) {
+ 
+-        // revanced blocker
+-        final int callingUid = Binder.getCallingUid();
+-        final Computer snapshot = mPm.snapshotComputer();
+-        boolean callerIsPlayStore = false;
+-        try {
+-            String[] pkgs = snapshot.getPackagesForUid(callingUid);
+-            if (pkgs != null) {
+-                for (String p : pkgs) {
+-                    if ("com.android.vending".equals(p)) {
+-                        callerIsPlayStore = true;
+-                        break;
+-                    }
+-                }
+-            }
+-        } catch (Exception e) {
+-            // Be defensive — if snapshot API changes, don't crash the installer.
+-            Slog.w(TAG, "RevancedBlocker: error checking installer uid: " + e);
+-        }
+-
+-        boolean allowUpdates = android.os.SystemProperties.getBoolean("persist.sys.revan.mod", true);
+-        if (allowUpdates && callerIsPlayStore
+-                && ("com.google.android.youtube".equals(packageName)
+-                    || "com.google.android.apps.youtube.music".equals(packageName))) {
+-            Slog.i(TAG, "RevancedBlocker: blocking installExistingPackage for " + packageName);
+-            // Inform Play Store of a failed install and return early to avoid heavy IO.
+-            InstallPackageHelper.onInstallComplete(PackageManager.INSTALL_FAILED_ABORTED, mContext, statusReceiver);
++        if (shouldBlockManagedStoreUpdate(packageName, Binder.getCallingUid())) {
++            InstallPackageHelper.onInstallComplete(PackageManager.INSTALL_FAILED_ABORTED,
++                    mContext, statusReceiver);
+             return;
+         }
+ 
+diff --git a/services/core/java/com/android/server/pm/PackageInstallerSession.java b/services/core/java/com/android/server/pm/PackageInstallerSession.java
+index c840fd4203a6..0cf47bcf373a 100644
+--- a/services/core/java/com/android/server/pm/PackageInstallerSession.java
++++ b/services/core/java/com/android/server/pm/PackageInstallerSession.java
+@@ -3133,16 +3133,21 @@ public class PackageInstallerSession extends IPackageInstallerSession.Stub {
+                 for (PackageInstallerSession child : children) {
+                     child.prepareInheritedFiles();
+                     child.parseApk();
++                    child.enforceManagedStoreUpdateBlock();
+                 }
+             } else {
+                 prepareInheritedFiles();
+                 parseApk();
++                enforceManagedStoreUpdateBlock();
+             }
+         }  catch (PackageManagerException e) {
+             final String completeMsg = ExceptionUtils.getCompleteMessage(e);
+             final String errorMsg = PackageManager.installStatusToString(e.error, completeMsg);
+             setSessionFailed(e.error, errorMsg);
+             onSessionVerificationFailure(e.error, errorMsg, /* extras= */ null);
++            if (e.error == INSTALL_FAILED_ABORTED) {
++                return;
++            }
+         }
+         if (isVerificationServiceEnabled()) {
+             performDeveloperVerification();
+@@ -3152,6 +3157,14 @@ public class PackageInstallerSession extends IPackageInstallerSession.Stub {
+         }
+     }
+ 
++    private void enforceManagedStoreUpdateBlock() throws PackageManagerException {
++        if (PackageInstallerService.shouldBlockManagedStoreUpdate(getInstallerPackageName(),
++                getPackageName())) {
++            throw new PackageManagerException(INSTALL_FAILED_ABORTED,
++                    "Play Store updates blocked for " + getPackageName());
++        }
++    }
++
+     private boolean isVerificationServiceEnabled() {
+         return Flags.verificationService();
+     }
+-- 
+2.43.0
+

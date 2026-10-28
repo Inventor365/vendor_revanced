@@ -1,6 +1,15 @@
 # ReVanced Prebuilt Apps
 LOCAL_PATH := $(call my-dir)
 
+ifndef REVANCED_ANDROID_MK_INCLUDED
+REVANCED_ANDROID_MK_INCLUDED := true
+
+ifneq ($(TARGET_DISABLE_REVANCED),true)
+
+ifeq ($(filter arm64,$(TARGET_ARCH) $(TARGET_2ND_ARCH)),)
+$(error vendor/revanced: Prebuilt ReVanced native libraries require arm64, but TARGET_ARCH=$(TARGET_ARCH))
+endif
+
 # Stock YouTube
 # A presigned app, so release signing (sign_target_files_apks) keeps Google's
 # signature instead of stopping on an APK it has no key for.
@@ -79,3 +88,6 @@ LOCAL_POST_INSTALL_CMD := \
     mkdir -p $(LOCAL_MODULE_PATH); \
     cp -rf $(LOCAL_PATH)/product/app/YTMusic/lib/* $(LOCAL_MODULE_PATH)/
 include $(BUILD_PREBUILT)
+
+endif # TARGET_DISABLE_REVANCED != true
+endif # REVANCED_ANDROID_MK_INCLUDED
