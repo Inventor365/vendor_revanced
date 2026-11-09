@@ -13,3 +13,12 @@ on property:sys.boot_completed=1 && property:persist.sys.revan.mod=true
 
     # Lock it read-only
     # mount none /product/app/YouTube/YouTube.apk /product/app/YouTube/YouTube.apk remount,bind,ro
+    setprop sys.revan.mounted 1
+
+# Off: drop the patched APKs as soon as the switch is turned off, and on any
+# boot that runs with it off, so nothing can keep a patched copy over the stock
+# /product APKs. sys.revan.mounted says which state this boot ended up in.
+on property:persist.sys.revan.mod=false
+    umount /product/app/YouTube/YouTube.apk
+    umount /product/app/YTMusic/YTMusic.apk
+    setprop sys.revan.mounted 0

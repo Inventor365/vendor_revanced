@@ -1238,14 +1238,21 @@ def adapt_settings_commit_4(settings_dir: Path) -> None:
     # 3. Adapt AppDashboardFragment.java
     frag = frag_path.read_text(encoding="utf-8")
     required_imports = [
+        "import android.content.pm.ApplicationInfo;",
         "import android.content.pm.IPackageDeleteObserver;",
         "import android.content.pm.PackageManager;",
+        "import android.os.Handler;",
+        "import android.os.Looper;",
         "import android.os.PowerManager;",
         "import android.os.SystemProperties;",
+        "import android.util.Log;",
         "import androidx.appcompat.app.AlertDialog;",
         "import androidx.preference.Preference;",
         "import androidx.preference.SwitchPreferenceCompat;",
         "import static android.os.UserHandle.USER_SYSTEM;",
+        "import java.util.ArrayList;",
+        "import java.util.List;",
+        "import java.util.concurrent.atomic.AtomicBoolean;",
         "import java.util.concurrent.atomic.AtomicInteger;",
     ]
     for imp in required_imports:
@@ -1266,6 +1273,8 @@ def adapt_settings_commit_4(settings_dir: Path) -> None:
             '            "com.google.android.youtube",\n'
             '            "com.google.android.apps.youtube.music"\n'
             "    };\n"
+            "    /** Reboot even if a PackageManager callback never arrives. */\n"
+            "    private static final long REVAN_ENABLE_TIMEOUT_MS = 30_000L;\n"
         )
         frag = frag[: m_const_anchor.end()] + consts + frag[m_const_anchor.end() :]
 
@@ -1284,43 +1293,85 @@ def adapt_settings_commit_4(settings_dir: Path) -> None:
     )
 
     revan_methods = (
-        "\n    private void showRevanRestartDialog(SwitchPreferenceCompat toggle, boolean enabled) {\n"
-        "        new AlertDialog.Builder(getContext())\n"
-        "                .setTitle(R.string.revan_restart_dialog_title)\n"
-        "                .setMessage(R.string.revan_restart_dialog_message)\n"
-        "                .setPositiveButton(R.string.revan_restart_now, (dialog, which) -> {\n"
-        "                    final Context context = requireContext().getApplicationContext();\n"
-        "                    toggle.setChecked(enabled);\n"
-        "                    if (enabled) {\n"
-        "                        uninstallUpdatesThenEnable(context);\n"
-        "                    } else {\n"
+        '\n'
+        '    private void showRevanRestartDialog(SwitchPreferenceCompat toggle, boolean enabled) {\n'
+        '        new AlertDialog.Builder(getContext())\n'
+        '                .setTitle(R.string.revan_restart_dialog_title)\n'
+        '                .setMessage(R.string.revan_restart_dialog_message)\n'
+        '                .setPositiveButton(R.string.revan_restart_now, (dialog, which) -> {\n'
+        '                    final Context context = requireContext().getApplicationContext();\n'
+        '                    toggle.setChecked(enabled);\n'
+        '                    if (enabled) {\n'
+        '                        uninstallUpdatesThenEnable(context);\n'
+        '                    } else {\n'
+        '                        // init.rv.rc drops the patched APK mounts as soon as the\n'
+        '                        // property is false, and again on every boot it stays false.\n'
         '                        SystemProperties.set(REVAN_PROP, "false");\n'
-        "                        reboot(context);\n"
-        "                    }\n"
-        "                })\n"
-        "                .setNegativeButton(android.R.string.cancel, null)\n"
-        "                .show();\n"
-        "    }\n\n"
-        "    private void uninstallUpdatesThenEnable(Context context) {\n"
-        "        // Keep the property false while PackageManager restores stock system package paths.\n"
-        "        final PackageManager pm = context.getPackageManager();\n"
-        "        final AtomicInteger pendingDeletes = new AtomicInteger(REVAN_PACKAGES.length);\n"
-        "        final IPackageDeleteObserver observer = new IPackageDeleteObserver.Stub() {\n"
-        "            @Override\n"
-        "            public void packageDeleted(String packageName, int returnCode) {\n"
-        "                if (pendingDeletes.decrementAndGet() == 0) {\n"
-        '                    SystemProperties.set(REVAN_PROP, "true");\n'
-        "                    reboot(context);\n"
-        "                }\n"
-        "            }\n"
-        "        };\n\n"
-        "        for (String pkg : REVAN_PACKAGES) {\n"
-        "            pm.deletePackageAsUser(pkg, observer, 0, USER_SYSTEM);\n"
-        "        }\n"
-        "    }\n\n"
-        "    private void reboot(Context context) {\n"
-        "        context.getSystemService(PowerManager.class).reboot(null);\n"
-        "    }\n"
+        '                        Log.i(TAG, "ReVanced off: " + REVAN_PROP + "="\n'
+        '                                + SystemProperties.get(REVAN_PROP) + ", rebooting");\n'
+        '                        reboot(context);\n'
+        '                    }\n'
+        '                })\n'
+        '                .setNegativeButton(android.R.string.cancel, null)\n'
+        '                .show();\n'
+        '    }\n'
+        '\n'
+        '    /**\n'
+        '     * The patched APKs are mounted over the /product copies, so a Play Store\n'
+        '     * update in /data would run instead of them: remove the updates first, with\n'
+        '     * the property still false so PackageManager restores the stock system\n'
+        '     * package, then enable and reboot. Only updated packages are deleted (on a\n'
+        '     * system package without an update the call only fails), and the reboot\n'
+        '     * happens even if a callback never arrives.\n'
+        '     */\n'
+        '    private void uninstallUpdatesThenEnable(Context context) {\n'
+        '        final PackageManager pm = context.getPackageManager();\n'
+        '        final List<String> updated = new ArrayList<>();\n'
+        '        for (String pkg : REVAN_PACKAGES) {\n'
+        '            try {\n'
+        '                final ApplicationInfo info = pm.getApplicationInfo(pkg,\n'
+        '                        PackageManager.MATCH_UNINSTALLED_PACKAGES);\n'
+        '                if ((info.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0) {\n'
+        '                    updated.add(pkg);\n'
+        '                }\n'
+        '            } catch (PackageManager.NameNotFoundException e) {\n'
+        '                Log.w(TAG, "ReVanced on: " + pkg + " is not installed");\n'
+        '            }\n'
+        '        }\n'
+        '\n'
+        '        final AtomicBoolean enabled = new AtomicBoolean();\n'
+        '        final Runnable enableAndReboot = () -> {\n'
+        '            if (!enabled.compareAndSet(false, true)) return;\n'
+        '            SystemProperties.set(REVAN_PROP, "true");\n'
+        '            Log.i(TAG, "ReVanced on: " + REVAN_PROP + "="\n'
+        '                    + SystemProperties.get(REVAN_PROP) + ", rebooting");\n'
+        '            reboot(context);\n'
+        '        };\n'
+        '        if (updated.isEmpty()) {\n'
+        '            enableAndReboot.run();\n'
+        '            return;\n'
+        '        }\n'
+        '\n'
+        '        final AtomicInteger pendingDeletes = new AtomicInteger(updated.size());\n'
+        '        final IPackageDeleteObserver observer = new IPackageDeleteObserver.Stub() {\n'
+        '            @Override\n'
+        '            public void packageDeleted(String packageName, int returnCode) {\n'
+        '                Log.i(TAG, "ReVanced on: removed updates of " + packageName\n'
+        '                        + " (result " + returnCode + ")");\n'
+        '                if (pendingDeletes.decrementAndGet() == 0) {\n'
+        '                    enableAndReboot.run();\n'
+        '                }\n'
+        '            }\n'
+        '        };\n'
+        '        new Handler(Looper.getMainLooper()).postDelayed(enableAndReboot, REVAN_ENABLE_TIMEOUT_MS);\n'
+        '        for (String pkg : updated) {\n'
+        '            pm.deletePackageAsUser(pkg, observer, 0, USER_SYSTEM);\n'
+        '        }\n'
+        '    }\n'
+        '\n'
+        '    private void reboot(Context context) {\n'
+        '        context.getSystemService(PowerManager.class).reboot(null);\n'
+        '    }\n'
     )
 
     onstart_pref_hook = (
