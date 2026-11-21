@@ -1425,6 +1425,36 @@ def adapt_settings_commit_4(settings_dir: Path) -> None:
 # Commit Application Orchestrator
 # ---------------------------------------------------------------------------
 
+def check_apm_list_types(fwb_dir: Path) -> List[str]:
+    """
+    A hunk whose context is only "if (parceledList == null) ... return
+    parceledList.getList();" can apply at an offset inside the wrong
+    ApplicationPackageManager method (git apply accepts it; seen on
+    Neoteric OS, where it landed in getInstalledApplicationsAsUser and
+    queryIntentActivityOptions). Check that every "List<T> res =
+    parceledList.getList();" matches the type of its parceledList.
+    """
+    apm_path = fwb_dir / "core/java/android/app/ApplicationPackageManager.java"
+    if not apm_path.is_file():
+        return []
+    text = apm_path.read_text(encoding="utf-8", errors="ignore")
+    decl = re.compile(r"(?:ParceledListSlice<(\w+)>|(PackageInfoList))\s+parceledList\b")
+    issues = []
+    for m in re.finditer(r"List<(\w+)>\s+res\s*=\s*parceledList\.getList\(\);", text):
+        decls = list(decl.finditer(text, 0, m.start()))
+        if not decls:
+            continue
+        last = decls[-1]
+        declared = last.group(1) or "PackageInfo"
+        if declared != m.group(1):
+            line = text.count("\n", 0, m.start()) + 1
+            issues.append(
+                f"ApplicationPackageManager.java:{line}: List<{m.group(1)}> res from a "
+                f"parceledList of {declared} (hunk applied in the wrong method)"
+            )
+    return issues
+
+
 def apply_or_adapt_commit(
     repo_dir: Path,
     revanced_dir: Path,
@@ -1486,6 +1516,15 @@ def apply_or_adapt_commit(
             log_info(f"Applying exact patch for {orig_sha[:12]} ({subject})...", quiet)
             run_cmd(["git", "apply", str(patch_path)], cwd=repo_dir, check=True)
             method_used = "exact_patch"
+            misplaced = check_apm_list_types(repo_dir)
+            if misplaced:
+                log_warn(
+                    f"Exact patch for {orig_sha[:12]} applied in the wrong place; "
+                    "reverting it for the structural adapter:\n  " + "\n  ".join(misplaced)
+                )
+                for rel_f in rel_files:
+                    run_cmd(["git", "checkout", "--", rel_f], cwd=repo_dir, check=False)
+                method_used = None
 
     # 4. Fallback to structural ROM-aware adaptation
     if method_used is None:
@@ -1507,6 +1546,10 @@ def apply_or_adapt_commit(
 
     # 5. Verify resulting code before committing
     ok_after, after_issues = verify_fn(repo_dir)
+    misplaced = check_apm_list_types(repo_dir)
+    if misplaced:
+        ok_after = False
+        after_issues = list(after_issues) + misplaced
     if not ok_after:
         # Roll back target files on verification failure so repository is never left broken
         for rel_f in rel_files:
